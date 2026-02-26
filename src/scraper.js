@@ -5,33 +5,56 @@ const config = require("./config");
 const DEBUG = process.argv.includes("--debug");
 const DUMP_DIR = path.join(__dirname, "..", "data");
 
-// URLs and link text that are definitely NOT coin listings
-const SKIP_URL_PATTERNS = [
-  "login", "log-in", "register", "registration", "account", "wp-admin",
-  "cart", "checkout", "seller", "purchase-order", "packing-slip",
-  "shipping-label", "confirmation", "my-purchase", "my-account",
-  "#", "javascript:", "mailto:", "tel:",
+// Known non-coin URL paths on usmint.pinehurstcoins.com
+const SKIP_PATHS = [
+  "/wp-login", "/wp-admin", "/wp-content", "/wp-includes",
+  "/seller-registration", "/new-seller-confirmation",
+  "/my-purchase-orders", "/my-account",
+  "/purchase-shipping-labels",
+  "/home-back-up-testing",
+  "/cart", "/checkout",
 ];
 
-const SKIP_TEXT_PATTERNS = [
-  "login", "log in", "sign in", "register", "sign up", "create account",
-  "seller registration", "purchase order", "packing slip", "shipping label",
-  "forgot password", "reset password", "contact us", "privacy policy",
-  "terms of service", "terms and conditions", "cookie", "about us",
-  "home", "menu", "navigation", "search", "close", "open", "toggle",
-];
+/**
+ * Parse a coin name from a URL slug.
+ * e.g. "2026-p-proof-1-american-silver-eagle-congratulations-set-box-ogp-coa"
+ * becomes "2026 P Proof 1 American Silver Eagle Congratulations Set Box OGP COA"
+ */
+function coinNameFromSlug(slug) {
+  return slug
+    .replace(/\/$/, "")        // remove trailing slash
+    .split("/").pop()          // get last path segment
+    .replace(/-/g, " ")       // dashes to spaces
+    .replace(/\b\w/g, (c) => c.toUpperCase()) // title case
+    .replace(/\bOgp\b/g, "OGP")
+    .replace(/\bCoa\b/g, "COA")
+    .trim();
+}
 
-function shouldSkipLink(href, text) {
-  const hrefLower = (href || "").toLowerCase();
-  const textLower = (text || "").toLowerCase();
+/**
+ * Check if a URL is an internal coin product page (not a utility page).
+ */
+function isCoinPage(href, baseUrl) {
+  try {
+    const url = new URL(href, baseUrl);
+    const base = new URL(baseUrl);
 
-  for (const pattern of SKIP_URL_PATTERNS) {
-    if (hrefLower.includes(pattern)) return true;
+    // Must be same domain
+    if (url.hostname !== base.hostname) return false;
+
+    // Must have a real path (not just "/" or "")
+    const pathname = url.pathname.replace(/\/$/, "");
+    if (!pathname || pathname === "") return false;
+
+    // Skip known utility paths
+    for (const skip of SKIP_PATHS) {
+      if (pathname.startsWith(skip)) return false;
+    }
+
+    return true;
+  } catch {
+    return false;
   }
-  for (const pattern of SKIP_TEXT_PATTERNS) {
-    if (textLower === pattern || textLower.includes(pattern)) return true;
-  }
-  return false;
 }
 
 function dumpHtml(html, label) {
@@ -74,112 +97,50 @@ async function scrapeWithBrowser(url) {
     // Wait a moment for any dynamic content to load
     await new Promise((r) => setTimeout(r, 2000));
 
-    const coins = await page.evaluate(() => {
+    const pageUrl = page.url();
+    const coins = await page.evaluate((skipPaths) => {
       const results = [];
+      const seen = new Set();
+      const base = new URL(window.location.href);
 
-      // Strategy 1: WooCommerce product listings
-      const wooProducts = document.querySelectorAll(
-        ".product, .woocommerce-loop-product, .type-product"
-      );
-      if (wooProducts.length > 0) {
-        wooProducts.forEach((el) => {
-          const nameEl =
-            el.querySelector(".woocommerce-loop-product__title") ||
-            el.querySelector(".product-title") ||
-            el.querySelector("h2") ||
-            el.querySelector("h3");
-          const linkEl = el.querySelector("a[href]");
-          const priceEl =
-            el.querySelector(".price") ||
-            el.querySelector(".woocommerce-Price-amount");
-          const imgEl = el.querySelector("img");
+      document.querySelectorAll("a[href]").forEach((a) => {
+        try {
+          const resolved = new URL(a.href, base);
+          if (resolved.hostname !== base.hostname) return;
 
-          if (nameEl) {
-            results.push({
-              name: nameEl.textContent.trim(),
-              url: linkEl ? linkEl.href : "",
-              price: priceEl ? priceEl.textContent.trim() : "",
-              image: imgEl ? imgEl.src : "",
-            });
+          const pathname = resolved.pathname.replace(/\/$/, "");
+          if (!pathname) return;
+
+          for (const skip of skipPaths) {
+            if (pathname.startsWith(skip)) return;
           }
-        });
-      }
 
-      // Strategy 2: Generic product cards / listing items
-      if (results.length === 0) {
-        const cards = document.querySelectorAll(
-          ".product-card, .listing-item, .coin-item, .item-card, article.post, .wp-block-post"
-        );
-        cards.forEach((el) => {
-          const nameEl =
-            el.querySelector("h2, h3, h4, .title, .name, .product-name");
-          const linkEl = el.querySelector("a[href]");
-          const priceEl = el.querySelector(
-            ".price, .amount, .cost, [class*='price']"
-          );
-          const imgEl = el.querySelector("img");
+          const fullUrl = resolved.href;
+          if (seen.has(fullUrl)) return;
+          seen.add(fullUrl);
 
-          if (nameEl) {
-            results.push({
-              name: nameEl.textContent.trim(),
-              url: linkEl ? linkEl.href : "",
-              price: priceEl ? priceEl.textContent.trim() : "",
-              image: imgEl ? imgEl.src : "",
-            });
-          }
-        });
-      }
+          // Derive name from URL slug
+          const slug = pathname.split("/").pop() || "";
+          const name = slug
+            .replace(/-/g, " ")
+            .replace(/\b\w/g, (c) => c.toUpperCase())
+            .replace(/\bOgp\b/g, "OGP")
+            .replace(/\bCoa\b/g, "COA")
+            .trim();
 
-      // Strategy 3: Look for any links that look like coin product pages
-      if (results.length === 0) {
-        const allLinks = document.querySelectorAll("a[href]");
-        const seen = new Set();
-        allLinks.forEach((a) => {
-          const href = a.href;
-          const text = a.textContent.trim();
-          // Skip navigation, login, generic links
-          if (
-            !text ||
-            text.length < 5 ||
-            text.length > 200 ||
-            seen.has(href) ||
-            href.includes("login") ||
-            href.includes("register") ||
-            href.includes("cart") ||
-            href.includes("account") ||
-            href.includes("wp-admin") ||
-            href === window.location.href
-          ) {
-            return;
-          }
-          // Look for links that seem like coin/product pages
-          if (
-            href.includes("/product") ||
-            href.includes("/coin") ||
-            href.includes("proof") ||
-            href.includes("silver") ||
-            href.includes("gold") ||
-            href.includes("eagle") ||
-            href.includes("dollar") ||
-            href.includes("mint") ||
-            href.includes("morgan") ||
-            href.includes("peace") ||
-            /\d{4}/.test(href)
-          ) {
-            seen.add(href);
-            const imgEl = a.querySelector("img") || a.closest("div")?.querySelector("img");
-            results.push({
-              name: text.replace(/\s+/g, " "),
-              url: href,
-              price: "",
-              image: imgEl ? imgEl.src : "",
-            });
-          }
-        });
-      }
+          const imgEl = a.querySelector("img") || a.closest("div")?.querySelector("img");
+
+          results.push({
+            name,
+            url: fullUrl,
+            price: "",
+            image: imgEl ? imgEl.src : "",
+          });
+        } catch {}
+      });
 
       return results;
-    });
+    }, SKIP_PATHS);
 
     console.log(`  Found ${coins.length} coin listing(s)`);
     return coins;
@@ -212,111 +173,35 @@ async function scrapeWithHttp(url) {
 
   const $ = cheerio.load(html);
   const results = [];
+  const seen = new Set();
 
-  // Strategy 1: WooCommerce products
-  $(".product, .woocommerce-loop-product, .type-product").each((_, el) => {
-    const $el = $(el);
-    const nameEl =
-      $el.find(".woocommerce-loop-product__title").first() ||
-      $el.find(".product-title").first() ||
-      $el.find("h2").first() ||
-      $el.find("h3").first();
-    const name = nameEl.text().trim();
-    const link = $el.find("a[href]").first().attr("href") || "";
-    const price =
-      $el.find(".price, .woocommerce-Price-amount").first().text().trim() || "";
-    const image = $el.find("img").first().attr("src") || "";
+  // Find all internal links that point to coin product pages
+  $("a[href]").each((_, el) => {
+    const $a = $(el);
+    const href = $a.attr("href") || "";
 
-    if (name && !shouldSkipLink(link, name)) {
-      results.push({ name, url: link, price, image });
+    // Resolve relative URLs
+    let fullUrl;
+    try {
+      fullUrl = new URL(href, url).href;
+    } catch {
+      return;
     }
+
+    if (seen.has(fullUrl) || !isCoinPage(fullUrl, url)) return;
+    seen.add(fullUrl);
+
+    // Derive coin name from URL slug (more reliable than link text on this site)
+    const name = coinNameFromSlug(fullUrl);
+    const image = $a.find("img").first().attr("src") || "";
+
+    if (DEBUG) {
+      const linkText = $a.text().trim().replace(/\s+/g, " ");
+      console.log(`  [debug] Found coin: "${name}" (link text: "${linkText}") -> ${fullUrl}`);
+    }
+
+    results.push({ name, url: fullUrl, price: "", image });
   });
-
-  // Strategy 2: Generic product cards
-  if (results.length === 0) {
-    $(
-      ".product-card, .listing-item, .coin-item, .item-card, article.post, .wp-block-post"
-    ).each((_, el) => {
-      const $el = $(el);
-      const name = $el
-        .find("h2, h3, h4, .title, .name, .product-name")
-        .first()
-        .text()
-        .trim();
-      const link = $el.find("a[href]").first().attr("href") || "";
-      const price = $el
-        .find(".price, .amount, .cost, [class*='price']")
-        .first()
-        .text()
-        .trim();
-      const image = $el.find("img").first().attr("src") || "";
-
-      if (name && !shouldSkipLink(link, name)) {
-        results.push({ name, url: link, price, image });
-      }
-    });
-  }
-
-  // Strategy 3: Product-like links (with strict filtering)
-  if (results.length === 0) {
-    const seen = new Set();
-    $("a[href]").each((_, el) => {
-      const $a = $(el);
-      const href = $a.attr("href") || "";
-      const text = $a.text().trim().replace(/\s+/g, " ");
-
-      if (
-        !text ||
-        text.length < 5 ||
-        text.length > 200 ||
-        seen.has(href) ||
-        shouldSkipLink(href, text)
-      ) {
-        return;
-      }
-
-      // Only match links that look like actual coin product pages
-      const hrefLower = href.toLowerCase();
-      if (
-        hrefLower.includes("/product") ||
-        hrefLower.includes("proof") ||
-        hrefLower.includes("silver") ||
-        hrefLower.includes("gold") ||
-        hrefLower.includes("eagle") ||
-        hrefLower.includes("dollar") ||
-        hrefLower.includes("morgan") ||
-        hrefLower.includes("peace") ||
-        hrefLower.includes("quarter") ||
-        hrefLower.includes("penny") ||
-        hrefLower.includes("nickel") ||
-        hrefLower.includes("dime") ||
-        hrefLower.includes("half-dollar") ||
-        hrefLower.includes("bullion") ||
-        hrefLower.includes("commemorative") ||
-        hrefLower.includes("uncirculated") ||
-        hrefLower.includes("burnished") ||
-        hrefLower.includes("ogp") ||
-        hrefLower.includes("coa") ||
-        /\/\d{4}[-/]/.test(hrefLower)
-      ) {
-        seen.add(href);
-        const image = $a.find("img").first().attr("src") || "";
-        results.push({ name: text, url: href, price: "", image });
-      }
-    });
-  }
-
-  // Strategy 4: If still nothing, grab all links on the page for debug
-  if (results.length === 0 && DEBUG) {
-    console.log("  [debug] No coins found. All links on page:");
-    $("a[href]").each((_, el) => {
-      const href = $(el).attr("href") || "";
-      const text = $(el).text().trim().replace(/\s+/g, " ");
-      if (text && text.length > 2) {
-        console.log(`    "${text}" -> ${href}`);
-      }
-    });
-  }
 
   console.log(`  Found ${results.length} coin listing(s)`);
   return results;
