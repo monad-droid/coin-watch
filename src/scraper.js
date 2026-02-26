@@ -40,148 +40,94 @@ function dumpHtml(html, label) {
 
 /**
  * Extract coin listings from HTML using Cheerio.
- * The Pinehurst site shows coin cards with:
- *   - Heading: coin name (e.g. "2026-P Proof $1 American Silver Eagle...")
- *   - SKU code (e.g. "26RF")
- *   - Price with $ (e.g. "$285")
- *   - "Create Purchase Order" link pointing to coin page
+ *
+ * The site uses Atomic Blocks pricing tables (Genesis framework).
+ * Each coin card is a div.ab-block-pricing-table with:
+ *   - Title (h5): coin name
+ *   - div.ab-pricing-table-subtitle: SKU code (e.g. "26RF")
+ *   - div.ab-pricing-table-price-wrap: price (e.g. "$285")
+ *   - div.ab-pricing-table-button a: "Create Purchase Order" link
  */
 function extractCoins($, baseUrl) {
   const results = [];
   const seen = new Set();
 
-  // Strategy 1: Find "Create Purchase Order" links (the main CTA on each coin card)
-  // then walk up the DOM to find the associated name and price
-  $('a').each((_, el) => {
-    const $a = $(el);
-    const href = $a.attr("href") || "";
-    const linkText = $a.text().trim();
+  // Primary strategy: Atomic Blocks pricing table cards
+  $(".ab-block-pricing-table").each((_, el) => {
+    const $card = $(el);
 
-    // Look for links that point to coin pages
-    let fullUrl;
+    // Coin name from the pricing table title div
+    const name = $card.find(".ab-pricing-table-title").first().text().trim();
+
+    // SKU from subtitle
+    const sku = $card.find(".ab-pricing-table-subtitle").first().text().trim();
+
+    // Price: Atomic Blocks splits currency symbol and amount into separate spans
+    const priceWrap = $card.find(".ab-pricing-table-price-wrap, .ab-pricing-table-price").first();
+    const currency = priceWrap.find(".ab-pricing-table-currency").text().trim() || "$";
+    const amount = priceWrap.find(".ab-pricing-table-amount").text().trim();
+    let price = "";
+    if (amount) {
+      price = `${currency}${amount}`;
+    } else {
+      // Fallback: grab combined text and extract price
+      const priceText = priceWrap.text().trim();
+      const priceMatch = priceText.match(/\$\s*[\d,]+(?:\.\d{2})?/);
+      price = priceMatch ? priceMatch[0].trim() : "";
+    }
+
+    // Link from the button
+    const link = $card.find(".ab-pricing-table-button a, a.ab-button").first();
+    const href = link.attr("href") || "";
+    let fullUrl = "";
     try {
       fullUrl = new URL(href, baseUrl).href;
-    } catch {
-      return;
+    } catch {}
+
+    // Image if present
+    const image = $card.find("img").first().attr("src") || "";
+
+    if (!name && !fullUrl) return;
+    const key = fullUrl || name;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    if (DEBUG) {
+      console.log(`  [debug] Coin: "${name}" | Price: ${price} | SKU: ${sku} | ${fullUrl}`);
     }
 
-    if (!isCoinPage(fullUrl, baseUrl) || seen.has(fullUrl)) return;
+    results.push({ name: name || sku, url: fullUrl, price, sku, image });
+  });
 
-    // Walk up through parent elements to find the card container
-    // Look for the nearest parent that contains both a heading and price text
-    let container = $a.parent();
-    let name = "";
-    let price = "";
-    let sku = "";
-    let image = "";
-
-    // Walk up at most 10 levels to find the card
-    for (let i = 0; i < 10 && container.length; i++) {
-      const containerText = container.text();
-
-      // Check if this container has a price ($ followed by digits)
-      const priceMatch = containerText.match(/\$\s*[\d,]+(?:\.\d{2})?/);
-
-      // Check if this container has a heading with a coin name
-      const heading = container.find("h1, h2, h3, h4, h5, h6").first();
-      const headingText = heading.text().trim();
-
-      if (priceMatch && headingText && headingText.length > 5) {
-        name = headingText;
-        price = priceMatch[0].trim();
-
-        // Look for SKU - typically a short alphanumeric code near the price
-        // Pattern: 2-6 character code like "26RF", "25NV", "22EA"
-        const allText = container.text();
-        const skuMatch = allText.match(/\b(\d{2}[A-Z]{1,4})\b/);
-        if (skuMatch) {
-          sku = skuMatch[1];
-        }
-
-        // Look for image
-        const img = container.find("img").first();
-        image = img.attr("src") || "";
-
-        break;
+  // Fallback: if no Atomic Blocks cards found, scan for any internal coin page links
+  if (results.length === 0) {
+    $("a[href]").each((_, el) => {
+      const $a = $(el);
+      const href = $a.attr("href") || "";
+      let fullUrl;
+      try {
+        fullUrl = new URL(href, baseUrl).href;
+      } catch {
+        return;
       }
 
-      container = container.parent();
-    }
+      if (!isCoinPage(fullUrl, baseUrl) || seen.has(fullUrl)) return;
+      seen.add(fullUrl);
 
-    // If we couldn't find a card container with heading+price,
-    // fall back to just using the link text or URL slug
-    if (!name) {
-      // Try siblings / nearby text
-      const parentText = $a.parent().parent().text().trim();
-      const priceMatch = parentText.match(/\$\s*[\d,]+(?:\.\d{2})?/);
-      if (priceMatch) price = priceMatch[0].trim();
-
-      // Derive name from URL slug as fallback
+      // Derive name from URL slug
       const slug = new URL(fullUrl).pathname.replace(/\/$/, "").split("/").pop() || "";
-      name = slug
+      const name = slug
         .replace(/-/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase())
         .replace(/\bOgp\b/g, "OGP")
         .replace(/\bCoa\b/g, "COA")
-        .replace(/\b1\b/g, "$1")
         .trim();
-    }
 
-    if (!name) return;
-    seen.add(fullUrl);
-
-    if (DEBUG) {
-      console.log(`  [debug] Coin: "${name}" | Price: ${price || "N/A"} | SKU: ${sku || "N/A"} | ${fullUrl}`);
-    }
-
-    results.push({ name, url: fullUrl, price, sku, image });
-  });
-
-  // Strategy 2: If no links matched, scan for price patterns and walk up to headings
-  if (results.length === 0) {
-    // Find any text node containing a dollar price
-    $("*").each((_, el) => {
-      const $el = $(el);
-      const ownText = $el.contents().filter(function() {
-        return this.type === "text";
-      }).text().trim();
-
-      const priceMatch = ownText.match(/^\$\s*[\d,]+(?:\.\d{2})?$/);
-      if (!priceMatch) return;
-
-      const price = priceMatch[0].trim();
-
-      // Walk up to find heading
-      let parent = $el.parent();
-      for (let i = 0; i < 10 && parent.length; i++) {
-        const heading = parent.find("h1, h2, h3, h4, h5, h6").first();
-        const link = parent.find("a[href]").first();
-        const headingText = heading.text().trim();
-
-        if (headingText && headingText.length > 5) {
-          const href = link.attr("href") || "";
-          let fullUrl = "";
-          try {
-            fullUrl = new URL(href, baseUrl).href;
-          } catch {}
-
-          if (seen.has(fullUrl || headingText)) break;
-          seen.add(fullUrl || headingText);
-
-          const img = parent.find("img").first();
-          const skuMatch = parent.text().match(/\b(\d{2}[A-Z]{1,4})\b/);
-
-          results.push({
-            name: headingText,
-            url: fullUrl,
-            price,
-            sku: skuMatch ? skuMatch[1] : "",
-            image: img.attr("src") || "",
-          });
-          break;
-        }
-        parent = parent.parent();
+      if (DEBUG) {
+        console.log(`  [debug] Fallback coin: "${name}" | ${fullUrl}`);
       }
+
+      results.push({ name, url: fullUrl, price: "", sku: "", image: "" });
     });
   }
 
