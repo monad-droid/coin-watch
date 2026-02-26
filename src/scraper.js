@@ -1,4 +1,45 @@
+const fs = require("fs");
+const path = require("path");
 const config = require("./config");
+
+const DEBUG = process.argv.includes("--debug");
+const DUMP_DIR = path.join(__dirname, "..", "data");
+
+// URLs and link text that are definitely NOT coin listings
+const SKIP_URL_PATTERNS = [
+  "login", "log-in", "register", "registration", "account", "wp-admin",
+  "cart", "checkout", "seller", "purchase-order", "packing-slip",
+  "shipping-label", "confirmation", "my-purchase", "my-account",
+  "#", "javascript:", "mailto:", "tel:",
+];
+
+const SKIP_TEXT_PATTERNS = [
+  "login", "log in", "sign in", "register", "sign up", "create account",
+  "seller registration", "purchase order", "packing slip", "shipping label",
+  "forgot password", "reset password", "contact us", "privacy policy",
+  "terms of service", "terms and conditions", "cookie", "about us",
+  "home", "menu", "navigation", "search", "close", "open", "toggle",
+];
+
+function shouldSkipLink(href, text) {
+  const hrefLower = (href || "").toLowerCase();
+  const textLower = (text || "").toLowerCase();
+
+  for (const pattern of SKIP_URL_PATTERNS) {
+    if (hrefLower.includes(pattern)) return true;
+  }
+  for (const pattern of SKIP_TEXT_PATTERNS) {
+    if (textLower === pattern || textLower.includes(pattern)) return true;
+  }
+  return false;
+}
+
+function dumpHtml(html, label) {
+  if (!DEBUG) return;
+  const file = path.join(DUMP_DIR, `debug-${label}-${Date.now()}.html`);
+  fs.writeFileSync(file, html, "utf-8");
+  console.log(`  [debug] HTML dumped to ${file}`);
+}
 
 /**
  * Scrape coins using Puppeteer (headless browser).
@@ -167,6 +208,8 @@ async function scrapeWithHttp(url) {
     timeout: config.browser.pageTimeout,
   });
 
+  dumpHtml(html, "http");
+
   const $ = cheerio.load(html);
   const results = [];
 
@@ -184,7 +227,7 @@ async function scrapeWithHttp(url) {
       $el.find(".price, .woocommerce-Price-amount").first().text().trim() || "";
     const image = $el.find("img").first().attr("src") || "";
 
-    if (name) {
+    if (name && !shouldSkipLink(link, name)) {
       results.push({ name, url: link, price, image });
     }
   });
@@ -208,13 +251,13 @@ async function scrapeWithHttp(url) {
         .trim();
       const image = $el.find("img").first().attr("src") || "";
 
-      if (name) {
+      if (name && !shouldSkipLink(link, name)) {
         results.push({ name, url: link, price, image });
       }
     });
   }
 
-  // Strategy 3: Product-like links
+  // Strategy 3: Product-like links (with strict filtering)
   if (results.length === 0) {
     const seen = new Set();
     $("a[href]").each((_, el) => {
@@ -227,31 +270,50 @@ async function scrapeWithHttp(url) {
         text.length < 5 ||
         text.length > 200 ||
         seen.has(href) ||
-        href.includes("login") ||
-        href.includes("register") ||
-        href.includes("cart") ||
-        href.includes("account") ||
-        href.includes("wp-admin")
+        shouldSkipLink(href, text)
       ) {
         return;
       }
 
+      // Only match links that look like actual coin product pages
+      const hrefLower = href.toLowerCase();
       if (
-        href.includes("/product") ||
-        href.includes("/coin") ||
-        href.includes("proof") ||
-        href.includes("silver") ||
-        href.includes("gold") ||
-        href.includes("eagle") ||
-        href.includes("dollar") ||
-        href.includes("mint") ||
-        href.includes("morgan") ||
-        href.includes("peace") ||
-        /\d{4}/.test(href)
+        hrefLower.includes("/product") ||
+        hrefLower.includes("proof") ||
+        hrefLower.includes("silver") ||
+        hrefLower.includes("gold") ||
+        hrefLower.includes("eagle") ||
+        hrefLower.includes("dollar") ||
+        hrefLower.includes("morgan") ||
+        hrefLower.includes("peace") ||
+        hrefLower.includes("quarter") ||
+        hrefLower.includes("penny") ||
+        hrefLower.includes("nickel") ||
+        hrefLower.includes("dime") ||
+        hrefLower.includes("half-dollar") ||
+        hrefLower.includes("bullion") ||
+        hrefLower.includes("commemorative") ||
+        hrefLower.includes("uncirculated") ||
+        hrefLower.includes("burnished") ||
+        hrefLower.includes("ogp") ||
+        hrefLower.includes("coa") ||
+        /\/\d{4}[-/]/.test(hrefLower)
       ) {
         seen.add(href);
         const image = $a.find("img").first().attr("src") || "";
         results.push({ name: text, url: href, price: "", image });
+      }
+    });
+  }
+
+  // Strategy 4: If still nothing, grab all links on the page for debug
+  if (results.length === 0 && DEBUG) {
+    console.log("  [debug] No coins found. All links on page:");
+    $("a[href]").each((_, el) => {
+      const href = $(el).attr("href") || "";
+      const text = $(el).text().trim().replace(/\s+/g, " ");
+      if (text && text.length > 2) {
+        console.log(`    "${text}" -> ${href}`);
       }
     });
   }
