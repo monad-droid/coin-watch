@@ -15,42 +15,16 @@ const SKIP_PATHS = [
   "/cart", "/checkout",
 ];
 
-/**
- * Parse a coin name from a URL slug.
- * e.g. "2026-p-proof-1-american-silver-eagle-congratulations-set-box-ogp-coa"
- * becomes "2026 P Proof 1 American Silver Eagle Congratulations Set Box OGP COA"
- */
-function coinNameFromSlug(slug) {
-  return slug
-    .replace(/\/$/, "")        // remove trailing slash
-    .split("/").pop()          // get last path segment
-    .replace(/-/g, " ")       // dashes to spaces
-    .replace(/\b\w/g, (c) => c.toUpperCase()) // title case
-    .replace(/\bOgp\b/g, "OGP")
-    .replace(/\bCoa\b/g, "COA")
-    .trim();
-}
-
-/**
- * Check if a URL is an internal coin product page (not a utility page).
- */
 function isCoinPage(href, baseUrl) {
   try {
     const url = new URL(href, baseUrl);
     const base = new URL(baseUrl);
-
-    // Must be same domain
     if (url.hostname !== base.hostname) return false;
-
-    // Must have a real path (not just "/" or "")
     const pathname = url.pathname.replace(/\/$/, "");
     if (!pathname || pathname === "") return false;
-
-    // Skip known utility paths
     for (const skip of SKIP_PATHS) {
       if (pathname.startsWith(skip)) return false;
     }
-
     return true;
   } catch {
     return false;
@@ -65,8 +39,157 @@ function dumpHtml(html, label) {
 }
 
 /**
+ * Extract coin listings from HTML using Cheerio.
+ * The Pinehurst site shows coin cards with:
+ *   - Heading: coin name (e.g. "2026-P Proof $1 American Silver Eagle...")
+ *   - SKU code (e.g. "26RF")
+ *   - Price with $ (e.g. "$285")
+ *   - "Create Purchase Order" link pointing to coin page
+ */
+function extractCoins($, baseUrl) {
+  const results = [];
+  const seen = new Set();
+
+  // Strategy 1: Find "Create Purchase Order" links (the main CTA on each coin card)
+  // then walk up the DOM to find the associated name and price
+  $('a').each((_, el) => {
+    const $a = $(el);
+    const href = $a.attr("href") || "";
+    const linkText = $a.text().trim();
+
+    // Look for links that point to coin pages
+    let fullUrl;
+    try {
+      fullUrl = new URL(href, baseUrl).href;
+    } catch {
+      return;
+    }
+
+    if (!isCoinPage(fullUrl, baseUrl) || seen.has(fullUrl)) return;
+
+    // Walk up through parent elements to find the card container
+    // Look for the nearest parent that contains both a heading and price text
+    let container = $a.parent();
+    let name = "";
+    let price = "";
+    let sku = "";
+    let image = "";
+
+    // Walk up at most 10 levels to find the card
+    for (let i = 0; i < 10 && container.length; i++) {
+      const containerText = container.text();
+
+      // Check if this container has a price ($ followed by digits)
+      const priceMatch = containerText.match(/\$\s*[\d,]+(?:\.\d{2})?/);
+
+      // Check if this container has a heading with a coin name
+      const heading = container.find("h1, h2, h3, h4, h5, h6").first();
+      const headingText = heading.text().trim();
+
+      if (priceMatch && headingText && headingText.length > 5) {
+        name = headingText;
+        price = priceMatch[0].trim();
+
+        // Look for SKU - typically a short alphanumeric code near the price
+        // Pattern: 2-6 character code like "26RF", "25NV", "22EA"
+        const allText = container.text();
+        const skuMatch = allText.match(/\b(\d{2}[A-Z]{1,4})\b/);
+        if (skuMatch) {
+          sku = skuMatch[1];
+        }
+
+        // Look for image
+        const img = container.find("img").first();
+        image = img.attr("src") || "";
+
+        break;
+      }
+
+      container = container.parent();
+    }
+
+    // If we couldn't find a card container with heading+price,
+    // fall back to just using the link text or URL slug
+    if (!name) {
+      // Try siblings / nearby text
+      const parentText = $a.parent().parent().text().trim();
+      const priceMatch = parentText.match(/\$\s*[\d,]+(?:\.\d{2})?/);
+      if (priceMatch) price = priceMatch[0].trim();
+
+      // Derive name from URL slug as fallback
+      const slug = new URL(fullUrl).pathname.replace(/\/$/, "").split("/").pop() || "";
+      name = slug
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+        .replace(/\bOgp\b/g, "OGP")
+        .replace(/\bCoa\b/g, "COA")
+        .replace(/\b1\b/g, "$1")
+        .trim();
+    }
+
+    if (!name) return;
+    seen.add(fullUrl);
+
+    if (DEBUG) {
+      console.log(`  [debug] Coin: "${name}" | Price: ${price || "N/A"} | SKU: ${sku || "N/A"} | ${fullUrl}`);
+    }
+
+    results.push({ name, url: fullUrl, price, sku, image });
+  });
+
+  // Strategy 2: If no links matched, scan for price patterns and walk up to headings
+  if (results.length === 0) {
+    // Find any text node containing a dollar price
+    $("*").each((_, el) => {
+      const $el = $(el);
+      const ownText = $el.contents().filter(function() {
+        return this.type === "text";
+      }).text().trim();
+
+      const priceMatch = ownText.match(/^\$\s*[\d,]+(?:\.\d{2})?$/);
+      if (!priceMatch) return;
+
+      const price = priceMatch[0].trim();
+
+      // Walk up to find heading
+      let parent = $el.parent();
+      for (let i = 0; i < 10 && parent.length; i++) {
+        const heading = parent.find("h1, h2, h3, h4, h5, h6").first();
+        const link = parent.find("a[href]").first();
+        const headingText = heading.text().trim();
+
+        if (headingText && headingText.length > 5) {
+          const href = link.attr("href") || "";
+          let fullUrl = "";
+          try {
+            fullUrl = new URL(href, baseUrl).href;
+          } catch {}
+
+          if (seen.has(fullUrl || headingText)) break;
+          seen.add(fullUrl || headingText);
+
+          const img = parent.find("img").first();
+          const skuMatch = parent.text().match(/\b(\d{2}[A-Z]{1,4})\b/);
+
+          results.push({
+            name: headingText,
+            url: fullUrl,
+            price,
+            sku: skuMatch ? skuMatch[1] : "",
+            image: img.attr("src") || "",
+          });
+          break;
+        }
+        parent = parent.parent();
+      }
+    });
+  }
+
+  return results;
+}
+
+/**
  * Scrape coins using Puppeteer (headless browser).
- * Best for JavaScript-rendered pages or sites with anti-bot measures.
  */
 async function scrapeWithBrowser(url) {
   const puppeteer = require("puppeteer");
@@ -94,53 +217,14 @@ async function scrapeWithBrowser(url) {
       timeout: config.browser.pageTimeout,
     });
 
-    // Wait a moment for any dynamic content to load
     await new Promise((r) => setTimeout(r, 2000));
 
-    const pageUrl = page.url();
-    const coins = await page.evaluate((skipPaths) => {
-      const results = [];
-      const seen = new Set();
-      const base = new URL(window.location.href);
+    const html = await page.content();
+    dumpHtml(html, "browser");
 
-      document.querySelectorAll("a[href]").forEach((a) => {
-        try {
-          const resolved = new URL(a.href, base);
-          if (resolved.hostname !== base.hostname) return;
-
-          const pathname = resolved.pathname.replace(/\/$/, "");
-          if (!pathname) return;
-
-          for (const skip of skipPaths) {
-            if (pathname.startsWith(skip)) return;
-          }
-
-          const fullUrl = resolved.href;
-          if (seen.has(fullUrl)) return;
-          seen.add(fullUrl);
-
-          // Derive name from URL slug
-          const slug = pathname.split("/").pop() || "";
-          const name = slug
-            .replace(/-/g, " ")
-            .replace(/\b\w/g, (c) => c.toUpperCase())
-            .replace(/\bOgp\b/g, "OGP")
-            .replace(/\bCoa\b/g, "COA")
-            .trim();
-
-          const imgEl = a.querySelector("img") || a.closest("div")?.querySelector("img");
-
-          results.push({
-            name,
-            url: fullUrl,
-            price: "",
-            image: imgEl ? imgEl.src : "",
-          });
-        } catch {}
-      });
-
-      return results;
-    }, SKIP_PATHS);
+    const cheerio = require("cheerio");
+    const $ = cheerio.load(html);
+    const coins = extractCoins($, url);
 
     console.log(`  Found ${coins.length} coin listing(s)`);
     return coins;
@@ -151,7 +235,6 @@ async function scrapeWithBrowser(url) {
 
 /**
  * Scrape coins using Axios + Cheerio (HTTP-based, no browser needed).
- * Faster and lighter, but won't work on JavaScript-rendered pages.
  */
 async function scrapeWithHttp(url) {
   const axios = require("axios");
@@ -172,39 +255,10 @@ async function scrapeWithHttp(url) {
   dumpHtml(html, "http");
 
   const $ = cheerio.load(html);
-  const results = [];
-  const seen = new Set();
+  const coins = extractCoins($, url);
 
-  // Find all internal links that point to coin product pages
-  $("a[href]").each((_, el) => {
-    const $a = $(el);
-    const href = $a.attr("href") || "";
-
-    // Resolve relative URLs
-    let fullUrl;
-    try {
-      fullUrl = new URL(href, url).href;
-    } catch {
-      return;
-    }
-
-    if (seen.has(fullUrl) || !isCoinPage(fullUrl, url)) return;
-    seen.add(fullUrl);
-
-    // Derive coin name from URL slug (more reliable than link text on this site)
-    const name = coinNameFromSlug(fullUrl);
-    const image = $a.find("img").first().attr("src") || "";
-
-    if (DEBUG) {
-      const linkText = $a.text().trim().replace(/\s+/g, " ");
-      console.log(`  [debug] Found coin: "${name}" (link text: "${linkText}") -> ${fullUrl}`);
-    }
-
-    results.push({ name, url: fullUrl, price: "", image });
-  });
-
-  console.log(`  Found ${results.length} coin listing(s)`);
-  return results;
+  console.log(`  Found ${coins.length} coin listing(s)`);
+  return coins;
 }
 
 /**

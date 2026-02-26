@@ -31,7 +31,10 @@ async function check() {
         `  First run: saved ${coins.length} coin(s) to watch list.`
       );
       console.log("  You will be notified when new coins appear.");
-      coins.forEach((c) => console.log(`    - ${c.name}`));
+      coins.forEach((c) => {
+        const details = [c.name, c.price ? `pays ${c.price}` : ""].filter(Boolean).join(" — ");
+        console.log(`    - ${details}`);
+      });
       return;
     }
 

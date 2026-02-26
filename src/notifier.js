@@ -9,7 +9,8 @@ async function notifyConsole(newCoins) {
   console.log("=".repeat(60));
   for (const coin of newCoins) {
     console.log(`\n  Name:  ${coin.name}`);
-    if (coin.price) console.log(`  Price: ${coin.price}`);
+    if (coin.sku) console.log(`  SKU:   ${coin.sku}`);
+    if (coin.price) console.log(`  Pays:  ${coin.price} per coin`);
     if (coin.url) console.log(`  URL:   ${coin.url}`);
   }
   console.log("\n" + "=".repeat(60) + "\n");
@@ -41,8 +42,9 @@ async function notifyEmail(newCoins) {
   const coinList = newCoins
     .map((c) => {
       let entry = `<li><strong>${escapeHtml(c.name)}</strong>`;
-      if (c.price) entry += ` - ${escapeHtml(c.price)}`;
-      if (c.url) entry += `<br><a href="${escapeHtml(c.url)}">${escapeHtml(c.url)}</a>`;
+      if (c.sku) entry += ` (SKU: ${escapeHtml(c.sku)})`;
+      if (c.price) entry += ` — Pays <strong>${escapeHtml(c.price)}</strong> per coin`;
+      if (c.url) entry += `<br><a href="${escapeHtml(c.url)}">Create Purchase Order</a>`;
       entry += `</li>`;
       return entry;
     })
@@ -89,8 +91,9 @@ async function notifyDiscord(newCoins) {
   const fields = newCoins.slice(0, 25).map((coin) => ({
     name: coin.name.substring(0, 256),
     value: [
-      coin.price ? `**Price:** ${coin.price}` : "",
-      coin.url ? `[View Listing](${coin.url})` : "",
+      coin.sku ? `**SKU:** ${coin.sku}` : "",
+      coin.price ? `**Pays:** ${coin.price} per coin` : "",
+      coin.url ? `[Create Purchase Order](${coin.url})` : "",
     ]
       .filter(Boolean)
       .join("\n") || "No details available",
