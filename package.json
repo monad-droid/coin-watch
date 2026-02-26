@@ -1,0 +1,22 @@
+{
+  "name": "coin-watch",
+  "version": "1.0.0",
+  "description": "Monitor usmint.pinehurstcoins.com for new coin listings and get notified",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node src/index.js --once",
+    "test": "node src/test.js"
+  },
+  "keywords": ["coins", "scraper", "monitor", "notifications", "us-mint", "pinehurst"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.5",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.3.1",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.1",
+    "puppeteer": "^24.37.5"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+.env
+data/coins.json
+data/coins-backup-*.json
+*.log
+.DS_Store
