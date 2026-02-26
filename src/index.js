@@ -5,6 +5,79 @@ const { processUpdate, isFirstRun } = require("./store");
 const { notify } = require("./notifier");
 
 const runOnce = process.argv.includes("--once");
+const runTest = process.argv.includes("--test");
+
+async function sendStartupNotification() {
+  const axios = require("axios");
+  if (!config.discord.webhookUrl) return;
+
+  try {
+    await axios.post(
+      config.discord.webhookUrl,
+      {
+        embeds: [
+          {
+            title: "Coin Watch Started",
+            description: `Monitoring [Pinehurst Coins US Mint](${config.targetUrl})`,
+            color: 0x00cc00,
+            fields: [
+              { name: "Schedule", value: `\`${config.cronSchedule}\``, inline: true },
+              { name: "Mode", value: config.scraperMode, inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+            footer: { text: "Coin Watch" },
+          },
+        ],
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+    console.log("  [discord] Startup notification sent");
+  } catch (err) {
+    console.error("  [discord] Startup notification failed:", err.message);
+  }
+}
+
+async function sendTestNotification() {
+  const axios = require("axios");
+  if (!config.discord.webhookUrl) {
+    console.error("ERROR: DISCORD_WEBHOOK_URL is not set in .env");
+    process.exit(1);
+  }
+
+  console.log("Sending test notification to Discord...");
+  console.log(`  Webhook: ${config.discord.webhookUrl.substring(0, 60)}...`);
+
+  try {
+    await axios.post(
+      config.discord.webhookUrl,
+      {
+        embeds: [
+          {
+            title: "Test Notification",
+            description: "If you see this, Discord notifications are working!",
+            color: 0xffd700,
+            fields: [
+              { name: "URL", value: config.targetUrl, inline: false },
+              { name: "Schedule", value: `\`${config.cronSchedule}\``, inline: true },
+              { name: "Notify Methods", value: config.notify.methods.join(", "), inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+            footer: { text: "Coin Watch - Test" },
+          },
+        ],
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+    console.log("\nTest notification sent! Check your Discord channel.");
+  } catch (err) {
+    console.error(`\nFailed to send: ${err.message}`);
+    if (err.response) {
+      console.error(`  Status: ${err.response.status}`);
+      console.error(`  Response: ${JSON.stringify(err.response.data)}`);
+    }
+    process.exit(1);
+  }
+}
 
 async function check() {
   const timestamp = new Date().toLocaleString();
@@ -63,6 +136,12 @@ async function check() {
 }
 
 async function main() {
+  // Handle --test flag: send a test notification and exit
+  if (runTest) {
+    await sendTestNotification();
+    return;
+  }
+
   console.log("Coin Watch - Monitoring Pinehurst Coins US Mint");
   console.log(`  URL:      ${config.targetUrl}`);
   console.log(`  Mode:     ${config.scraperMode}`);
@@ -75,6 +154,11 @@ async function main() {
   }
 
   console.log(`  Schedule: ${config.cronSchedule}\n`);
+
+  // Send a startup notification to Discord so user knows the watcher is alive
+  if (config.notify.methods.includes("discord")) {
+    await sendStartupNotification();
+  }
 
   // Run immediately on startup
   await check();
