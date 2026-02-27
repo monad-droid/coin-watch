@@ -76,48 +76,41 @@ async function notifyEmail(newCoins) {
 }
 
 /**
- * Send a Discord webhook notification.
+ * Send a Telegram Bot API notification.
  */
-async function notifyDiscord(newCoins) {
-  if (!config.discord.webhookUrl) {
+async function notifyTelegram(newCoins) {
+  if (!config.telegram.botToken || !config.telegram.chatId) {
     console.warn(
-      "  [discord] Skipped: DISCORD_WEBHOOK_URL not configured in .env"
+      "  [telegram] Skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured in .env"
     );
     return;
   }
 
   const axios = require("axios");
 
-  const fields = newCoins.slice(0, 25).map((coin) => ({
-    name: coin.name.substring(0, 256),
-    value: [
-      coin.sku ? `**SKU:** ${coin.sku}` : "",
-      coin.price ? `**Pays:** ${coin.price} per coin` : "",
-      coin.url ? `[Create Purchase Order](${coin.url})` : "",
-    ]
-      .filter(Boolean)
-      .join("\n") || "No details available",
-    inline: false,
-  }));
-
-  const payload = {
-    embeds: [
-      {
-        title: `New Coin(s) Detected! (${newCoins.length})`,
-        description: `Found at [Pinehurst Coins US Mint](${config.targetUrl})`,
-        color: 0xffd700, // Gold color
-        fields,
-        timestamp: new Date().toISOString(),
-        footer: { text: "Coin Watch" },
-      },
-    ],
-  };
-
-  await axios.post(config.discord.webhookUrl, payload, {
-    headers: { "Content-Type": "application/json" },
+  const coinLines = newCoins.map((coin) => {
+    const parts = [`<b>${escapeHtml(coin.name)}</b>`];
+    if (coin.sku) parts.push(`SKU: ${escapeHtml(coin.sku)}`);
+    if (coin.price) parts.push(`Pays: <b>${escapeHtml(coin.price)}</b> per coin`);
+    if (coin.url) parts.push(`<a href="${escapeHtml(coin.url)}">Create Purchase Order</a>`);
+    return parts.join("\n");
   });
 
-  console.log("  [discord] Webhook notification sent");
+  const text =
+    `<b>New Coin(s) Detected! (${newCoins.length})</b>\n` +
+    `Found at <a href="${escapeHtml(config.targetUrl)}">Pinehurst Coins US Mint</a>\n\n` +
+    coinLines.join("\n\n");
+
+  const url = `https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`;
+
+  await axios.post(url, {
+    chat_id: config.telegram.chatId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+  });
+
+  console.log("  [telegram] Notification sent");
 }
 
 /**
@@ -137,8 +130,8 @@ async function notify(newCoins) {
         case "email":
           await notifyEmail(newCoins);
           break;
-        case "discord":
-          await notifyDiscord(newCoins);
+        case "telegram":
+          await notifyTelegram(newCoins);
           break;
         default:
           console.warn(`  Unknown notification method: ${method}`);
@@ -157,4 +150,4 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-module.exports = { notify, notifyConsole, notifyEmail, notifyDiscord };
+module.exports = { notify, notifyConsole, notifyEmail, notifyTelegram };

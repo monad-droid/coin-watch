@@ -9,66 +9,57 @@ const runTest = process.argv.includes("--test");
 
 async function sendStartupNotification() {
   const axios = require("axios");
-  if (!config.discord.webhookUrl) return;
+  if (!config.telegram.botToken || !config.telegram.chatId) return;
 
   try {
+    const text =
+      `<b>Coin Watch Started</b>\n` +
+      `Monitoring <a href="${config.targetUrl}">Pinehurst Coins US Mint</a>\n\n` +
+      `<b>Schedule:</b> <code>${config.cronSchedule}</code>\n` +
+      `<b>Mode:</b> ${config.scraperMode}`;
+
     await axios.post(
-      config.discord.webhookUrl,
+      `https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`,
       {
-        embeds: [
-          {
-            title: "Coin Watch Started",
-            description: `Monitoring [Pinehurst Coins US Mint](${config.targetUrl})`,
-            color: 0x00cc00,
-            fields: [
-              { name: "Schedule", value: `\`${config.cronSchedule}\``, inline: true },
-              { name: "Mode", value: config.scraperMode, inline: true },
-            ],
-            timestamp: new Date().toISOString(),
-            footer: { text: "Coin Watch" },
-          },
-        ],
-      },
-      { headers: { "Content-Type": "application/json" } }
+        chat_id: config.telegram.chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }
     );
-    console.log("  [discord] Startup notification sent");
+    console.log("  [telegram] Startup notification sent");
   } catch (err) {
-    console.error("  [discord] Startup notification failed:", err.message);
+    console.error("  [telegram] Startup notification failed:", err.message);
   }
 }
 
 async function sendTestNotification() {
   const axios = require("axios");
-  if (!config.discord.webhookUrl) {
-    console.error("ERROR: DISCORD_WEBHOOK_URL is not set in .env");
+  if (!config.telegram.botToken || !config.telegram.chatId) {
+    console.error("ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env");
     process.exit(1);
   }
 
-  console.log("Sending test notification to Discord...");
-  console.log(`  Webhook: ${config.discord.webhookUrl.substring(0, 60)}...`);
+  console.log("Sending test notification to Telegram...");
 
   try {
+    const text =
+      `<b>Test Notification</b>\n` +
+      `If you see this, Telegram notifications are working!\n\n` +
+      `<b>URL:</b> ${config.targetUrl}\n` +
+      `<b>Schedule:</b> <code>${config.cronSchedule}</code>\n` +
+      `<b>Notify Methods:</b> ${config.notify.methods.join(", ")}`;
+
     await axios.post(
-      config.discord.webhookUrl,
+      `https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`,
       {
-        embeds: [
-          {
-            title: "Test Notification",
-            description: "If you see this, Discord notifications are working!",
-            color: 0xffd700,
-            fields: [
-              { name: "URL", value: config.targetUrl, inline: false },
-              { name: "Schedule", value: `\`${config.cronSchedule}\``, inline: true },
-              { name: "Notify Methods", value: config.notify.methods.join(", "), inline: true },
-            ],
-            timestamp: new Date().toISOString(),
-            footer: { text: "Coin Watch - Test" },
-          },
-        ],
-      },
-      { headers: { "Content-Type": "application/json" } }
+        chat_id: config.telegram.chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }
     );
-    console.log("\nTest notification sent! Check your Discord channel.");
+    console.log("\nTest notification sent! Check your Telegram chat.");
   } catch (err) {
     console.error(`\nFailed to send: ${err.message}`);
     if (err.response) {
@@ -149,8 +140,8 @@ async function main() {
 
   console.log(`  Schedule: ${config.cronSchedule}\n`);
 
-  // Send a startup notification to Discord so user knows the watcher is alive
-  if (config.notify.methods.includes("discord")) {
+  // Send a startup notification to Telegram so user knows the watcher is alive
+  if (config.notify.methods.includes("telegram")) {
     await sendStartupNotification();
   }
 
